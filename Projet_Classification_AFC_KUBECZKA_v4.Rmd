@@ -1,0 +1,1724 @@
+---
+title: 'Projet : classification et AFC'
+author: "Bruno KUBECZKA"
+date: "07 mai 2023"
+abstract: "Le projet a pour objet de mettre en oeuvre analyse factorielle des correspondances et classification sur les résultats des élections présidentielles de 2017. En l'occurrence, on orientera l'étude sur l'ancrage territorial des candidats."
+output:
+  pdf_document:
+    toc: yes
+    number_sections: yes
+    highlight: tango
+    toc_depth: 4
+  html_notebook:
+    toc: yes
+    highlight: tango
+    number_sections: yes
+    fig_width: 8
+    fig_height: 6
+  html_document:
+    toc: yes
+    highlight: tango
+    number_sections: yes
+  word_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE)
+```
+
+```{r, echo=FALSE}
+review=FALSE
+```
+
+```{r 1. Chargement des librairies, message=FALSE, warning=FALSE, include=FALSE}
+
+if (!"FactoMineR" %in% installed.packages()) install.packages("FactoMineR")
+if (!"readr" %in% installed.packages()) install.packages("readr")
+if (!"tidyverse" %in% installed.packages()) install.packages("tidyverse")
+if (!"raster" %in% installed.packages()) install.packages("raster")
+if (!"geodata" %in% installed.packages()) install.packages("geodata")
+if (!"colorspace" %in% installed.packages()) install.packages("colorspace")
+if (!"knitr" %in% installed.packages()) install.packages("knitr")
+
+
+library(readr)
+library(FactoMineR)
+library(tidyverse)
+library(raster) # tracé géographique (spplot)
+library(geodata) # chargement des cartes géographiques
+library(colorspace) # palette de couleur
+library(knitr) # Tableau
+library(RColorBrewer) # brewer.pal
+
+```
+
+\newpage
+
+```{r COULEURS, include=FALSE}
+# col_candidats="darkslategray4"
+col_candidats="darkred"
+col_departements="dodgerblue4"
+col_groupes=c("deeppink3", "orange", "brown", "darkturquoise", "darkseagreen4")
+const_unselect=0.8
+
+
+# Palettes sur cartes de France
+ncolors <- 40
+palette_sunset <- rev(sequential_hcl(n=ncolors, palette = "Sunset"))
+palette_green <- rev(sequential_hcl(n=ncolors, palette = "YlGn"))
+palette_bluered <- diverging_hcl(n=ncolors, palette = "Blue-Red 2")
+
+
+```
+
+```{r fonction tri_candidat_contrib, include=FALSE}
+
+# pour un candidat donné (col), 
+# retourne par ordre décroissant les contributions aux axes 
+
+# res.CA : resultat de la fonction CA
+# candidat : nom du candidat
+
+tri_candidat_contrib <- function(res.CA, candidat)
+{
+  # Classement des candidats contributeurs à l'axe spécifié
+  res.CA$col$contrib[candidat,]  %>% 
+  order(decreasing=TRUE) %>% 
+  res.CA$col$contrib[candidat, .] %>% 
+  round(2)
+}
+```
+
+```{r fonction tri_candidat_cos2, include=FALSE}
+
+# pour un candidat donné (col), 
+# retourne par ordre décroissant les meilleuirs axes de représentation 
+
+# res.CA : resultat de la fonction CA
+# candidat : nom du candidat
+
+tri_candidat_cos2 <- function(res.CA, candidat)
+{
+  # Classement des candidats représentés sur l'axe spécifié
+  res.CA$col$cos2[candidat,]  %>% 
+  order(decreasing=TRUE) %>% 
+  res.CA$col$cos2[candidat, .] %>% 
+  round(2)
+}
+```
+
+
+```{r fonction tri_departement_contrib_pour_une_dim, include=FALSE}
+
+# pour une dimension donnée, 
+# retourne par ordre décroissant les départements contributeurs (row)
+
+# res.CA : resultat de la fonction CA
+# dim : nom de la dimension à traiter (par ex. "Dim 3")
+
+tri_departement_contrib_pour_une_dim <- function(res.CA, dim)
+{
+  # Classement des départements contributeurs à l'axe spécifié
+  res.CA$row$contrib[,dim]  %>% 
+  order(decreasing=TRUE) %>% 
+  res.CA$row$contrib[., dim] %>% 
+  round(2)
+}
+```
+
+```{r fonction tri_candidat_contrib_pour_une_dim, include=FALSE}
+
+# pour une dimension donnée, 
+# retourne dans l'ordre décroissant les candidats contributeurs de l'axe (col)
+
+# res.CA : resultat de la fonction CA
+# dim : nom de la dimension à traiter (par ex. "Dim 3")
+
+tri_candidat_contrib_pour_une_dim <- function(res.CA, dim)
+{
+  # Classement des candidats contributeurs à l'axe spécifié
+  res.CA$col$contrib[,dim]  %>% 
+  order(decreasing=TRUE) %>% 
+  res.CA$col$contrib[., dim] %>% 
+  round(2)
+}
+```
+
+```{r fonction tri_candidat_cos2_pour_une_dim, include=FALSE}
+
+# pour une dimension donnée, 
+# retourne dans l'ordre décroissant les candidats (col) les mieux représentés (cos2)
+
+# res.CA : resultat de la fonction CA
+# dim : nom de la dimension à traiter (par ex. "Dim 3")
+
+tri_candidat_cos2_pour_une_dim <- function(res.CA, dim)
+{
+  # Classement des candidats les mieux représentées sur l'axe spécifié
+  res.CA$col$cos2[,dim]  %>% 
+  order(decreasing=TRUE) %>% 
+  res.CA$col$cos2[., dim] %>% 
+  round(2)
+}
+```
+
+```{r fonction tri_groupe_cos2, include=FALSE}
+
+# pour un groupe donné (quanti.sup), 
+# retourne dans l'ordre décroissant 
+# les dimensions où le groupe est le mieux représenté (cos2)
+
+# res.CA : resultat de la fonction CA
+# groupe : nom du groupe  à traiter (par ex. "groupe.1")
+
+tri_groupe_cos2 <- function(res.CA, groupe)
+{
+  # Classement des candidats les mieux représentées sur l'axe spécifié
+  res.CA$quali.sup$cos2[groupe,]  %>% 
+  order(decreasing=TRUE) %>% 
+  res.CA$quali.sup$cos2[groupe, .] %>% 
+  round(2)
+}
+```
+
+```{r FONCTION plot_groupe, include=FALSE, eval=FALSE}
+
+# affiche un groupe et les candidats associés 
+# sur le plan spécifié
+
+# res.CA : résultat de l'AFC (Candidats en ligne et Départements en colonne)
+# groupe : numéro du groupe à visualiser
+# dims : plan à représenter (vecteur)
+
+plot_groupe <- function(res.CA, groupe, dims=c(1,2)) {
+  
+plot(res.CA, 
+     choix="CA", 
+     axes=dims,
+     
+     selectCol="contrib 15", # départements
+     selectRow=as.vector(candidats_par_groupe[[paste0("groupe",groupe)]]), # candidats
+     invisible=c("col","quali.sup"),
+     
+     col.col=col_departements,
+     palette=col_groupes,
+     habillage=107,
+     cex=0.7)
+}
+```
+
+```{r FONCTION load_map_france, include=FALSE}
+
+load_map_france <- function () {
+
+  # Chargement de la carte de france avec départements (level=2)
+  france <- gadm(country="FRA", level=2, path="./geodata")
+  
+  # Factorisation des données "chaine de caractères
+  france$NAME_1 <- as.factor(as.character(france$NAME_1)) # régions
+  france$NAME_2 <- as.factor(as.character(france$NAME_2)) # départements
+  
+  return(france)
+}
+
+```
+
+```{r FONCTION plot_map_candidat, include=FALSE}
+
+# map : carte à afficher
+# candidat_data : données "candidat" à afficher (vecteur indexé par département)
+
+plot_map_candidat <- function(map, candidat_data, title, palette=palette_sunset) {
+
+  # Charegement de la carte de France (et département associés)
+  # ---------------------------------
+  carte.temp <- load_map_france()
+  
+  # Mapping des départements
+  # Identification des départements de candidat_data qui sont dans les départements 'france'
+  mapping_dpt <- (names(candidat_data) %in% carte.temp$NAME_2) 
+#  print(names(candidat_data[!mapping_dpt]))
+
+  # Création d'une colonne 'display' dans l'objet carte
+  # Injection des données dans la colonne 'display'
+  carte.temp$display=rep(NA, length(carte.temp$NAME_2))
+  for (d in names(candidat_data[mapping_dpt])) {
+    
+    carte.temp$display[which(carte.temp$NAME_2==d)] <- candidat_data[d]
+  }
+
+  # Tracé des départements
+  # ----------------------
+  spplot(carte.temp, zcol="display", col.regions = palette,
+         scale=list(draw=TRUE),
+         main=title,
+         cex=0.5)
+}
+```
+
+```{r FONCTION plot_map_candidat_historique, include=FALSE}
+
+# map : carte à afficher
+# candidat_data : données "candidat" à afficher (vecteur indexé par département)
+
+plot_map_candidat_historique <- function(map, candidat_data, title, palette=palette_sunset) {
+
+  # organisation des données à afficher
+  # ----------------------------------
+  # map.temp <- map # travail sur une copie de map, problème de visualisation sinon
+  map.temp <- load_map_france()
+
+  map.temp$display=rep(NA, length(map.temp$NAME_2))
+  for (d in names(candidat_data)) {
+    
+    map.temp$display[which(map.temp$NAME_2==d)] <- candidat_data[d]
+  }
+
+  # Tracé des départements
+  # ----------------------
+  spplot(map.temp, zcol="display", col.regions = palette,
+         scale=list(draw=TRUE),
+         main=title,
+         cex.main=0.7)
+}
+```
+
+
+
+
+# Présentation de l'étude
+
+## Introduction
+
+Dans cette étude des résultats de l'élection présidentielle de 2017, on va s'atteler à tirer des tendances sur l'**ancrage des candidats sur le territoire national**.
+
+En d'autres termes, il va s'agir pour chaque candidat (y compris, votes blancs, votes nuls et abstention)
+
+- de rapprocher les candidats au profil similaire,
+
+- de rapprocher ces candidats aux départements votant plus ou moins pour eux
+
+
+La méthodologie proposée est la suivante
+
+- On procédera à une Analyse des Correspondances (AFC)  pour amener les modalités Candidats et Départements dans un espace géométrique commun
+
+- On interprétera les résultats pour en extraire des premières tendances de rapprochements entre modalités
+
+- On procédera à une classification des scores colonnes de l'AFC pour regrouper les candidats les plus proches
+
+- Enfin on caractérisera les groupes de candidats pour identifier les départements les plus marquants pour le groupe.
+
+
+## Présentation des données
+
+
+```{r 1. Chargement du fichier, message=FALSE, warning=FALSE, include=FALSE}
+Presidentielle_2017_Resultats_Communes_T1_clean <- read_csv("_input_/Presidentielle_2017_Resultats_Communes_T1_clean.csv")
+```
+
+
+```{r 1. Préparation des données, echo=review, include=FALSE}
+
+# Préparation des données
+# . Extraction du nombre de votes par commune pour chaque candidat
+# . Extraction du département et conversion en facteurs
+colnames(Presidentielle_2017_Resultats_Communes_T1_clean)[20] <- "MELENCHON" # pour resoudre un probleme lie a l'accentuation du E
+donnees_var <- Presidentielle_2017_Resultats_Communes_T1_clean[,c('Abstentions','Blancs','Nuls','LE PEN','MELENCHON','MACRON','FILLON','LASSALLE','DUPONT-AIGNAN','HAMON','ASSELINEAU','POUTOU','ARTHAUD','CHEMINADE')]
+departements <- factor(Presidentielle_2017_Resultats_Communes_T1_clean$Département)
+
+# création de la matrice de données
+donnees_elections <- matrix(NA,nlevels(departements),ncol(donnees_var))
+
+# agrégation des données par département
+for (j in 1:nlevels(departements)){
+  dep = levels(departements)[j]
+  donnees_elections[j,] <- colSums(donnees_var[departements==dep,])
+}
+
+# conversion en Data Frame
+donnees_elections <- data.frame(donnees_elections,row.names = levels(departements))
+colnames(donnees_elections) <- colnames(donnees_var)
+```
+
+Les données sont fournies sous la forme d'un **tableau de contingence** prenant
+
+- en **ligne**, les **106 départements français**
+
+- en **colonne**, les **11 candidats aux élections présidentielles de 2017**, l'**abstention**, le **vote nul** et le **vote blanc** (soit 14 modalités en tout)
+
+
+Les valeurs sont les **effectifs (en nombre de votes)** par département pour chacun des candidats.
+
+
+## Pertinence de l'étude : indépendance des variables d'étude
+
+L'intérêt de l'étude réside dans le fait que lignes (départements) et colonnes (candidats) sont significativement associées. 
+
+Pour s'en assurer, on prend le soin de valider la dépendance des 2 variables d'étude à savoir les départements d'un côté et les candidats de l'autre.
+
+On procède à un **test du $\chi^2$** sur le tableau de contingence tel que 
+
+- **H0 hypothèse nulle** : lignes et colonnes du tableau de contingence sont indépendants
+
+- **H1 hypothèse alternative** : lignes et colonnes du tableau de contingence sont dépendantes les unes des autres
+
+
+
+Dans ce cas, le nombre de degrés de liberté est (I-1)(J-1) soit (106 - 1) * (14-1) = 1365.
+
+La fonction *chi.test* de R donne le résultat suivant:
+
+\scriptsize
+
+```{r, echo=FALSE}
+chisq <- chisq.test(donnees_elections)
+chisq
+```
+\normalsize
+
+En l'occurrence, **la p-valeur de $2.2 10^{-6}$ est < 5%**, on rejette donc H0: "les variables sont indépendantes".
+
+On confirme la pertinence  de l'étude.
+
+```{r, include=FALSE}
+
+# calcul des résidus. 
+c <- (chisq$expected-chisq$observed)^2 / chisq$expected
+head(round(c, 3))
+```
+
+
+# Analyse factorielle des correspondances (AFC)
+
+## Profils des candidats (colonnes)
+
+
+A partir du tableau de contingence conjoint des variables Départements et Candidats, on crée un tableau de **profils colonnes** i.e, pour chaque candidat, la **distribution de ses votes répartis sur l'ensemble des départements** ($\sum = 1$).
+
+Pour cela, on calcule 
+
+- la **marge ligne** c-a-d la somme des effectifs en colonne soit dans notre cas la somme des votants pour un candidat donné, tout département confondu
+
+- la **marge colonne** c-a-d la somme des effectifs en ligne soit dans notre cas les effectifs par département des inscrits sur les listes électorales
+
+- l'**effectif total** i.e. le nombre d'inscrits sur les listes électorales
+
+
+Les **profils des colonnes (candidats)** se calculent alors de la façon suivante : 
+
+$$ profils.colonnes  = \frac{colonnes}{marge.ligne} $$
+
+Et le **profil colonne moyen** devient alors 
+
+$$ profil.colonne.moyen = \frac{marge.colonne}{effectif.total} $$
+\scriptsize
+
+```{r}
+
+# marge ligne : Somme des effectifs par colonne
+marge.ligne <- apply(donnees_elections, MARGIN=2, FUN=sum) 
+
+# marge colonne : Somme des effectifs par ligne 
+marge.colonne <- apply(donnees_elections, MARGIN=1, FUN=sum) 
+
+# effectif total : somme des effectifs par département
+effectif.total <- sum(marge.ligne)
+```
+
+```{r}
+
+# Calcul des profils colonnes
+profils.colonnes <- t(t(donnees_elections) / marge.ligne) 
+
+# calcul du profil colonne moyen
+profil.colonne.moyen = marge.colonne / effectif.total
+```
+
+```{r, include=FALSE}
+profil.colonne.moyen
+```
+
+\normalsize
+
+Ainsi calculés
+
+- Un **profil colonne (candidat)** contient la **répartition par département des effectifs ayant voté pour le candidat**.
+
+- Le **profil colonne moyen** contient la **répartition par département des effectifs inscrits sur les listes électorales**. C'est **la situation d'indépendance** pour laquelle la répartition des votants pour un candidat calquerait la répartition des inscrits par département.
+
+
+```{r, include=FALSE}
+
+# identifier le mapping 
+# entre les départements de et les départements de l'objet france
+# on pointe les départements français hors métropole
+france <- load_map_france()
+mapping <- (names(profil.colonne.moyen) %in% france$NAME_2)
+names(profil.colonne.moyen[!mapping])
+rm(france)
+```
+
+On peut ainsi visualiser le profil colonne moyen sur une projection géographique qui fait apparaître la distribution des inscrits sur le territoire national.
+
+```{r, echo=FALSE}
+plot_map_candidat(map=NULL, candidat_data = profil.colonne.moyen, title="Répartition des inscrits sur les listes électorales (en %)", palette=palette_sunset)
+# plot_map_candidat(map=france, candidat_data = profil.colonne.moyen, title="Répartition des inscrits sur les listes électorales (en %)", palette=palette_sunset)
+# plot_map_candidat(map=france, candidat_data = profil.colonne.moyen[!mapping], title="Répartition des inscrits sur les listes électorales (en %)")
+```
+
+Les zones les plus denses sont logiquement localisées autour des grandes métropoles ; on note aussi quelques autres pôles comme le bord de la méditerranée, la Bretagne, la frontière franco-allemande et la Normandie.
+
+
+\newpage
+
+## Analyse Factorielle des Correspondances (AFC)
+
+L'analyse factorielle des correspondances va permettre de rapprocher l'ensemble des modalités (candidats et départements) dans un même espace de dimensions restreintes.
+
+Dans l'étude que nous menons sur les ancrages territoriaux, il s'agira d’interpréter les projections des modalités sur des plans pertinents afin
+
+- d'identifier les candidats proches les uns des autres (pour en déduire les prémices d'une classification)
+
+- d'identifier les départements proches de ces candidats (pour en déduire des potentiels départements votant davantage pour ces candidats )
+
+
+Techniquement, on va procéder à une **analyse factorielle des correspondances** entre les modalités "départements" et les modalités "candidats" en utilisant la fonction *CA* de la librairie *FactoMineR*. 
+
+On note que l'AFC a cette caractéristique de construire un espace de dimension *min(I-1, J-1)* (au-delà l'inertie portée par les axes est nulle). Dans notre cas où nous avons en lignes 106 départements (*I vaut 106*), et en colonnes 14 candidats (*J vaut 14*), l'AFC créera un espace à 13 dimensions maximum.
+
+Par ailleurs, on note les points suivants
+
+- le nombre de modalités Départements et Candidats est de taille raisonnable et il n'est pas nécessaire de les diminuer en amont par une pré-classification de type k-moyennes.
+
+- l'espace créé par l'AFC disposera d'un maximum de 13 dimensions ; c'est cette limite dimensionnelle que nous préciserons dans l'appel à la fonction.
+
+d'où l'appel à la fonction suivante:
+
+```{r}
+res.CA <- CA(donnees_elections, ncp=13, graph=FALSE)
+```
+
+
+## Interprétation des axes de l'AFC
+
+Ce chapitre a pour vocation d'interpréter les axes en mettant en avant, plan par plan,
+
+- les modalités "candidats" les plus contributives à la construction des axes
+
+- les modalités "candidats" les mieux représentées ($cos^2$) des axes
+
+- les 15 modalités "départements" les plus contributives
+
+
+### Inertie portée par les axes
+
+Avant d'étudier les différents plans, on examine la part d'inertie totale portée par les 13 axes de l'AFC (en % d'inertie totale):
+
+\scriptsize
+
+```{r, echo=FALSE}
+round(res.CA$eig[,2],2)
+```
+\normalsize
+
+```{r, include=FALSE}
+sum(res.CA$eig[,2][1:4])
+```
+
+```{r, echo=FALSE}
+barplot(res.CA$eig[,2],
+        main="Part d'inertie portée par les axes de l'AFC",
+        col="lightblue",
+        ylab="% d'inertie totale",
+        cex.main=0.8)
+```
+
+Les 4 premiers axes représentent un total de **93,29% de l'inertie totale**.
+
+Pour simplifier le travail sur les candidats et les départements, on utilisera autant que faire se peut ces 4 axes. Néanmoins, on ne s'interdit pas d'utiliser les axes au-delà sur lesquels de l'information relative à des candidats "plus modestes" pourrait apparaître.
+
+### Pertinence des axes par candidat
+
+
+```{r, echo=FALSE, include=FALSE}
+tab_candidats <- data.frame(candidat=c(), contrib=c(), cos2=c())
+for (c in colnames(donnees_elections)) {
+
+  contrib <- tri_candidat_contrib(res.CA, candidat=c)
+  cos2 <- tri_candidat_cos2(res.CA, candidat=c)
+  
+  print(c)
+  print(contrib[contrib>10])
+  print(cos2[cos2>0.25])
+  
+}
+
+```
+
+Afin de visualiser les candidats sur les plans les plus pertinents, on étudie 2 données les concernant:
+
+- leur **contribution** à la construction des axes de l'AFC (*col$contrib*), par ordre décroissant
+
+- leur **qualité de représentation** sur les axes de l'AFC (*col$cos2*), par ordre décroissant
+
+Le tableau ci-dessous résume pour chaque candidat (modalité en colonne du résultat de l'AFC) les meilleurs axes selon les critères suivants:
+
+- axes représentant a minima 10% de la contribution de la modalité colonne (*col$contrib>10%*)
+
+- axes sur lesquels la qualité de représentation $cos^2$ de la modalité colonne vaut a minima 0,25 (*col$cos2 > 0.25*)
+
+
+```{r, include=FALSE}
+cAbstentions <- c("Abstentions","1, 2", "1, 2")
+cBlancs <- c("Blancs","10, 8, 11, 9", "5")
+cLEPEN <- c("LE PEN","2, 6", "2")
+cMELENCHON <- c("MELENCHON","3, 5, 4, 6", "3, 1")
+cMACRON <- c("MACRON","8, 1, 9", "1, 2")
+cFILLON <- c("FILLON","3, 4", "3, 1")
+cLASSALLE <- c("LASSALLE","4, 3", "4, 3")
+cDA <- c("DUPONT-AIGNAN","6, 5", "2, 5")
+cHAMON <- c("HAMON","9, 6, 8", "1, 2")
+cASSELINEAU <- c("ASSELINEAU","10, 9, 11, 6", "6, 10, 9")
+cPOUTOU <- c("POUTOU","12, 8", "5, 3")
+cARTHAUD <- c("ARTHAUD","11, 12, 5", "5")
+cCHEMINADE <- c("CHEMINADE","13", "13, 5")
+cNuls <- c("Nuls","7, 9, 8", "1, 7")
+
+tab_candidats <- rbind(cAbstentions, cBlancs, cLEPEN, cMELENCHON, cMACRON, cFILLON, cLASSALLE, cDA, cHAMON, cASSELINEAU, cPOUTOU, cARTHAUD, cCHEMINADE, cNuls)
+rownames(tab_candidats) <- c("Abstentions", "Blancs", "LEPEN", "MELENCHON", "MACRON", "FILLON", "LASSALLE", "DUPONT-AIGNAN", "HAMON", "ASSELINEAU", "POUTOU", "ARTHAUD", "CHEMINADE", "Nuls")
+colnames(tab_candidats) <- c("Candidats", "Contribution", "Qualité de représentation")
+
+```
+
+
+```{r, echo=FALSE}
+kable(tab_candidats[,2:3])
+```
+
+
+Au vu de ce tableau récapitulatif, on appliquera la **politique de visualisation** suivante :
+
+- On visualisera les 6 premiers axes qui permettent de couvrir l'ensemble des candidats (soit en contributeurs, soit en meilleures représentations)
+
+- Pour les candidats contribuant aux axes jusque 6 (portant 97.72% de l'inertie totale du jeu de données), on les fera apparaître sur les plans auxquels ils contribuent.
+
+- Pour les candidats dont la contribution est concentrée sur les axes au-delà de 6, on prendra le parti de les visualiser sur les axes où ils sont le plus visibles.
+
+  par ex. **POUTOU**, contributeur des "petits axes" 8 et 12, sera volontairement visualisé sur les axes 3 et 5 qui portent la représentation la plus importante.
+
+
+
+### Interprétation des axes 1 et 2
+
+**Candidats les plus contributeurs des axes (*col$contrib[j]>10%*)**
+
+***Axe 1***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_contrib_pour_une_dim(res.CA, "Dim 1")
+res [res> 10]
+
+```
+\normalsize
+
+***Axe 2***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_contrib_pour_une_dim(res.CA, "Dim 2")
+res [res> 10]
+
+```
+\normalsize
+
+**Candidats les mieux représentés sur les axes (*col$cos2[j]>0.25*)**
+
+***Axe 1***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_cos2_pour_une_dim(res.CA, "Dim 1")
+res[res>0.25]
+```
+
+\normalsize
+
+***Axe 2***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_cos2_pour_une_dim(res.CA, "Dim 2")
+res[res>0.25]
+```
+\normalsize
+
+Sur le **plan 1:2**, 
+
+- on affichera donc les candidats les plus contributeurs à savoir **Abstentions**, **MACRON**, **LE PEN**
+
+- on complétera avec les candidats non contributeurs les mieux représentés ($cos^2$ > 0.25) : **FILLON**, **HAMON**, **Nuls**, **DUPONT-AIGNAN**
+
+```{r, echo=FALSE}
+const.col_axes_1_2 = c("Abstentions", "MACRON", "FILLON", "HAMON", "LE PEN", "DUPONT-AIGNAN", "Nuls")
+```
+
+```{r, echo=FALSE, fig.height=8, fig.width=10}
+plot( res.CA, axes=c(1,2), choix="CA",
+      title="AFC Axes 1 et 2",
+      col.col=col_candidats,
+      col.row=col_departements,
+      selectCol=const.col_axes_1_2,
+      selectRow="contrib 15",
+      unselect=const_unselect)
+
+```
+
+**Interprétation**
+
+Le plan oppose 
+
+- sur l'axe 1 Abstentions et Nuls d'un côté aux candidats **HAMON**, **MACRON**, **FILLON**.
+
+- sur l'axe 2 DUPONT-AIGNAN et LE PEN aux candidats **MACRON** et **HAMON** ainsi que **Blancs** et **Nuls**.
+
+On note par ailleurs
+
+- Le rapprochement des modalités **Nuls** et **Abstentions**. 
+
+  Ce sont des modalités qui cotoient des **départements d'Outre-Mer**, parmi les plus contributeurs de la construction des axes 1 et 2.
+
+- Le rapprochement des candidats **DUPONT-AIGNAN** et **LE PEN**.
+
+  Ce sont des modalités proches des départements du nord de la france : **Pas de Calais**, **Nord**
+
+- Le rapprochement des candidats **FILLON**, **MACRON** et **HAMON**.
+
+  Ils côtoient des départements contributeurs de l'île de France (**Paris**, **Hauts-de-Seine**, **Yvelines**) et de l'ouest de la France (**Loire-Atlantique** et **Ille-et-Vilaine**).
+
+
+### Interprétation des axes 3 et 4
+
+**Candidats les plus contributeurs des axes (*col$contrib[j]>10%*)**
+
+***Axe 3***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_contrib_pour_une_dim(res.CA, "Dim 3")
+res [res> 10]
+
+```
+\normalsize
+
+***Axe 4***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_contrib_pour_une_dim(res.CA, "Dim 4")
+res [res> 10]
+
+```
+\normalsize
+
+**Candidats les mieux représentés sur les axes (*col$cos2[j]>0.25*)**
+
+***Axe 3***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_cos2_pour_une_dim(res.CA, "Dim 3")
+res[res>0.25]
+```
+\normalsize
+
+***Axe 4***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_cos2_pour_une_dim(res.CA, "Dim 4")
+res[res>0.25]
+```
+\normalsize
+
+Sur le **plan 3:4**, 
+
+- on affichera les candidats les plus contributeurs et les mieux représentés à savoir **FILLON**, **LASSALLE**, **MELENCHON**
+
+- on complétera par le candidat **POUTOU** (non contributeur)  dont on a vu que l'axe 3 est la meilleure représentation.
+
+```{r, echo=FALSE}
+
+const.col_axes_3_4 = c("FILLON", "LASSALLE", "MELENCHON", "POUTOU")
+
+```
+
+```{r, echo=FALSE, fig.height=8, fig.width=10, warning=FALSE}
+
+plot( res.CA, axes=c(3,4), choix="CA",
+      title="AFC Axes 3 et 4",
+      col.col=col_candidats,
+      col.row=col_departements,
+      selectCol=const.col_axes_3_4,
+      selectRow="contrib 15",
+      unselect=const_unselect)
+
+```
+
+**Interprétation**
+
+Le plan met en avant la particularité du candidat **LASSALLE** très éloigné des autres candidats sur les axes 3 et 4.
+
+Il oppose aussi sur l'axe 3 le candidat **FILLON** des candidats **POUTOU** et **MELENCHON**
+
+Le plan confirme aussi la proximité du candidat **FILLON** des départements **Yvelines** et **Paris** et y ajoute les départements **Var**.
+
+On note par ailleurs
+
+- le rapprochement dans une certaine mesure des candidats **POUTOU** et **MELENCHON**, concomitamment proches de la **Haute-Garonne**,
+
+- la proximité du candidat **MELENCHON** et le département **Seine-Saint-Denis**
+
+- la rapprochement du candidat **LASSALLE** des départements corses (**Haute-Corse** et **Corse-du-Sud**) et du sud-ouest (**Pyrénées-Atlantiques**)
+
+
+### Interprétation des axes 5 et 6
+
+**Candidats les plus contributeurs des axes (*col$contrib[j]>10%*)**
+
+***Axe 5***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_contrib_pour_une_dim(res.CA, "Dim 5")
+res [res> 10]
+
+```
+\normalsize
+
+***Axe 6***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_contrib_pour_une_dim(res.CA, "Dim 6")
+res [res> 10]
+
+```
+\normalsize
+
+**Candidats les mieux représentés sur les axes (*col$cos2[j]>0.25*)**
+
+***Axe 5***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_cos2_pour_une_dim(res.CA, "Dim 5")
+res[res>0.25]
+```
+
+\normalsize
+
+***Axe 6***
+
+\scriptsize
+
+```{r, echo=FALSE}
+res <- tri_candidat_cos2_pour_une_dim(res.CA, "Dim 6")
+res[res>0.25]
+```
+
+\normalsize
+
+Sur le **plan 5:6**, 
+
+- on affichera les candidats les plus contributeurs à savoir **DUPONT-AIGNAN**, **MELENCHON**, **ARTHAUD**, **HAMON**, **LE PEN**
+
+- on complétera avec les candidats non contributeurs les mieux représentés sur le plan à savoir **POUTOU**, **Blancs**, **ASSELINEAU** 
+
+- on ajoutera le candidat **CHEMINADE** (non contributeur)  dont on a vu que l'axe 5 est la meilleure représentation possible.
+
+
+```{r, echo=FALSE}
+
+const.col_axes_5_6 = c("DUPONT-AIGNAN", "MELENCHON", "ARTHAUD", "HAMON", "LE PEN", "POUTOU", "Blancs", "ASSELINEAU", "CHEMINADE")
+
+```
+
+```{r, echo=FALSE, fig.height=8, fig.width=10, warning=FALSE}
+
+plot( res.CA, axes=c(5,6), choix="CA",
+      title="AFC Axes 5 et 6",
+      col.col=col_candidats,
+      col.row=col_departements,
+      selectCol=const.col_axes_5_6,
+      selectRow="contrib 15",
+#      xlim=c(-0.1,0.2),
+      ylim=c(-0.15,0.15),
+      unselect=const_unselect)
+
+```
+
+**Interprétation**
+
+Le plan 5:6 (qui a été zoomé pour plus de lisibilité) présente des **candidats très concentrés autour de l'origine**, qui projettent peu de variabilité autour du barycentre vu des axes 5 et 6. 
+
+Néanmoins cette concentration autour de l'origine met en avant 
+
+- la proximité des candidats **CHEMINADE**, **ASSELINEAU**, **ARTHAUD**, **Blancs** voire **POUTOU**, peu ou pas représentés sur les autres plans.
+
+- un rapprochement des candidats **POUTOU**, **HAMON**, **MELENCHON**, **LE PEN** et **DUPONT-AIGNAN** que l'on considérera de façon mesurée, sachant que ce sont des candidats qui sont par ailleurs mieux représentés sur d'autres plans.
+
+- un candidat **DUPONT-AIGNAN** proche du département **Essonne** (où il est maire et député)
+
+- un candidat **ASSELINEAU** proche de départements d'île de France comme **Seine-Saint-Denis**, **Val-de-Marne** et **Essonne**.
+
+- un candidat **HAMON** proche du **Pas-de-Calais** et du **Finistère**.
+
+
+
+## Conclusion de la phase d'interprétation : quelques tendances
+
+
+L'interprétation des axes a pu mettre en évidence quelques tendances
+
+- relatives au rapprochement des candidats entre eux
+
+- relatives au rapprochement des candidats avec des départements
+
+
+Ainsi, l'interprétation rapproche les modalités suivantes
+
+- **Abstentions** et **Nuls** sur le plan 1:2 s'approchent des départements de la **France d'Outre-Mer**.
+
+- **LE PEN** et **DUPONT-AIGNAN** sur le plan 1:2, puis sur le plan 5:6, s'approchent des départements **Pas-de-Calais**, **Nord** et **Essonne**.
+
+- **MACRON**, **FILLON**, **HAMON** sur le plan 1:2 s'approchent des départements d'Ile-de-France (**Paris**, **Yvelines**, **Hauts-de-Seine**) et de l'ouest de la France (**Ille-et-Vilaine** et **Loire-Atlantique**)
+
+- **MELENCHON** et **POUTOU** sur les plans 3:4 puis 5:6, sans pour autant mettre en avant un rapprochement de départements en particulier
+
+- **Blancs**, **ARTHAUD**, **POUTOU**, **ASSELINEAU**, **CHEMINADE** sur le plan 5:6
+
+- **LASSALLE** sur le plan 3:4, proches des départements corses **Corse-du-sud** et **Haute-Corse**, et du sud-ouest de la France **Pyrénées-Atlantique**, **Haute-Pyrénées**, **Landes**
+
+
+
+\newpage
+
+# Rapprochement des candidats (classification)
+
+Nous venons d'effectuer une analyse factorielle des correspondances (AFC) qui a permis de rassembler dans un espace unique à 13 dimensions les modalités Candidats et Départements. 
+L'interprétation "à l'oeil" de leur projection sur différents plans pertinents a fait apparaître des rapprochements "géométriques" de quelques candidats d'une part, et des candidats et des départements d'autre part. 
+
+L'objet de ce chapitre est de consolider les **rapprochements des candidats** de façon algorithmique.
+
+Pour ce faire, on va procéder à une **classification des candidats en se basant sur les distances entre leurs scores colonnes respectifs**.
+
+Le nombre de colonnes étant limité (14 modalités), on procédera à une **classification ascendante hiérarchique** (CAH) qu'on consolidera ensuite par une **classification par la méthode des k-moyennes** (les centres initiaux découleront des classes identifiées par la CAH)
+
+
+## Classification Ascendante Hiérarchique (CAH) sur les scores colonnes (candidats)
+
+L'étude des candidats nous amène à traiter les scores en colonnes.
+
+L'intérêt de procéder à une classification sur les résultats de l'analyse factorielle est que l'analyse factorielle concentre l'information du jeu de données (sa variabilité) sur les 1ères composantes principales, les dernières composantes pouvant être assimilées à du bruit i.e de l'aléatoire. En éliminant les dernières composantes de l'AFC, on stabilisera les résultats de la classification.
+
+Afin d'éliminer ce qu'on peut considérer comme du bruit, on va procéder à une classification basée sur la **distance des colonnes sur les 4 premiers axes** représentant **93.29% de l'inertie totale**.
+
+
+```{r, include=FALSE}
+
+# part cumulée de l'inertie totale portée par les axes
+res.CA$eig[,3]
+```
+
+
+La classification se base sur le **critère de perte minimale d'inertie inter-classes de Ward sur distance euclidienne** entre les **scores des candidats (en colonnes)**, exprimés pour l'occasion sur **4 dimensions** de l'AFC.
+
+Pour cela,
+
+- on extrait les scores colonnes sur 4 dimensions
+
+- on calcule la distance euclidienne entre les scores colonnes restreints
+
+- on utilise la fonction *stats::hclust* sur les distances et on visualise le **dendogramme** qui en résulte.
+
+\scriptsize
+
+```{r}
+
+## Scores des candidats (colonnes)
+## sur 4 dimensions
+scores.nb.dimensions <- 4
+scores.colonnes <- res.CA$col$coord[,1:scores.nb.dimensions]
+
+## Distances euclidiennes entre les scores colonnes
+distances = dist(scores.colonnes)
+
+## Classification "Ward" sur distance euclidienne
+res.CAH.colonnes = hclust(distances, method="ward.D2")
+
+```
+
+\normalsize
+
+```{r, fig.height=6, fig.width=6, echo=FALSE}
+plot (res.CAH.colonnes, 
+      main="Dendogramme - Scores en colonne",
+      cex.main=0.9)
+legend("topright", 
+       legend=c("3 classes", "4 classes", "5 classes", "6 classes", "7 classes"), 
+       pch="_", 
+       col=c("deepskyblue","deepskyblue", "darkorange3","deepskyblue", "deepskyblue"), 
+       cex=0.8)
+abline(h=0.73, col="deepskyblue", lwd=1)
+abline(h=0.50, col="deepskyblue", lwd=1)
+abline(h=0.37, col="darkorange3", lwd=2)
+abline(h=0.26, col="deepskyblue", lwd=1)
+abline(h=0.22, col="deepskyblue", lwd=1)
+
+```
+
+De haut en bas (de 2 classes à n classes), on visualise les **sauts d'inertie intra-classes** au fur-et-à-mesure qu'on augmente le nombre de classes (attribut *height* du résultat de la classification) : plus le saut entre "étages" est grand, plus le "gain" d'inertie intra-classes est grand.
+
+On cherche le nombre de classes tel que les variations de l'inertie intra-classes (représentée par l'ordonnée *height*) restent **petites et stables**.
+
+\scriptsize
+
+```{r, echo=FALSE}
+sort(res.CAH.colonnes$height, decreasing = TRUE) 
+```
+\normalsize
+
+En l'occurrence, les sauts peuvent être considérés comme importants jusqu'au passage de 5 à 6 classes ; ils deviennent minimes au-delà.
+
+Ainsi une segmentation en 6 classes semble optimale au sens de la minimisation de l'inertie intra-classes. néanmoins elle isole le candidat FILLON qu'on préférera intégré dans un groupe plus large.
+
+On prend donc le parti de conserver **une classification à 5 classes** plus lisible.
+
+
+## Choix des classes
+
+La méthode *stats::cutree* permet d'extraire les classes du résultat de la CAH. En l'ocurrence, on spécifie une segmentation en **5 classes** (attribut *k=5*)
+
+```{r}
+nb_groups = 5
+groups <- cutree(res.CAH.colonnes, k=nb_groups)
+```
+
+
+
+```{r, echo=FALSE}
+
+candidats_par_groupe = list()
+
+for (i in 1:nb_groups) {
+  
+  candidats_par_groupe[[paste0("groupe", i)]] <- as.vector(names(groups)[groups==i])
+}
+
+
+```
+
+Les **5 groupes de candidats** qui en découlent sont donc : 
+
+\scriptsize
+
+```{r, echo=FALSE}
+candidats_par_groupe
+```
+\normalsize
+
+
+## Consolidation des classes par la méthode des k-means / Qualité de la classification
+
+La partition par la méthode de classification hiérarchique peut ne pas être optimale, à cause justement du principe de hiérarchisation. 
+
+Afin de stabiliser la classification (et vérifier qu'un candidat n'a pas intérêt à se rapprocher d'un groupe plus proche), 
+
+- on va procéder à une **classification des scores colonnes par la méthode des k-means**, 
+
+- en spécifiant comme **centres initiaux** les centres des classes identifiées précédemment (on utilise les scores en colonnes sur les 4 premières dimensions)
+
+\scriptsize
+
+```{r}
+
+## calcul des coordonnées des centres initiaux
+scores.colonnes.centers <- colMeans(scores.colonnes[c("Abstentions", "Nuls"),])
+
+scores.colonnes.centers <- rbind(scores.colonnes.centers, 
+                                 colMeans(scores.colonnes[c("Blancs", "MELENCHON", 
+                                                            "ASSELINEAU", "POUTOU", 
+                                                            "ARTHAUD", "CHEMINADE"),]))
+scores.colonnes.centers <- rbind(scores.colonnes.centers, 
+                                 colMeans(scores.colonnes[c("LE PEN", "DUPONT-AIGNAN"),]))
+
+scores.colonnes.centers <- rbind(scores.colonnes.centers, 
+                                 colMeans(scores.colonnes[c("MACRON", "FILLON", "HAMON"),]))
+
+scores.colonnes.centers <- rbind(scores.colonnes.centers, 
+                                 scores.colonnes["LASSALLE",])
+```
+
+
+```{r}
+res.CA.kmeans <- kmeans(scores.colonnes, centers=scores.colonnes.centers)
+```
+
+```{r, echo=FALSE}
+res.CA.kmeans
+```
+\normalsize
+
+La **consolidation par k-means confirme la classification** construite par la CAH. Aucun candidat n'a changé de classes.
+
+On note par ailleurs la **bonne qualité de classification** avec un **$R^2$ de l'ordre de 89.7%** :
+
+- les groupes sont concentrés et présentent de **faibles inerties intra-classes**,
+
+- l'**inertie totale** est **portée majoritairement par l'inertie inter-classes**.
+
+
+## Visualisation des groupes
+
+On visualise plan par plan les candidats colorés de leur groupe, pour identifier le plan où les groupes sont le plus distinctement visibles.
+
+```{r, echo=FALSE}
+# Visualisation depuis ACF
+donnees_elections_w_groups <- cbind(as.data.frame(t(donnees_elections)),groupe=as.factor(groups))
+res.CA.groups = CA(donnees_elections_w_groups, quali.sup=107, ncp=13, graph=F)
+```
+
+
+
+```{r, fig.height=4, fig.width=6, echo=FALSE, warning=FALSE}
+
+par(mfrow=c(2,2))
+
+plot(res.CA.groups,
+     choix="CA", 
+     axes=c(1,2),
+     title="Classes représentées sur le plan 1:2",
+     habillage=107, 
+     selectCol="contrib 20",
+     invisible=c("col","quali.sup"),
+     col.col=col_departements,
+     palette=col_groupes,
+     cex=0.7)
+
+plot(res.CA.groups,
+     choix="CA", 
+     axes=c(3,4),
+     title="Classes représentées sur le plan 3:4",
+     habillage=107, 
+     selectCol="contrib 20",
+     invisible=c("col","quali.sup"),
+     col.col=col_departements,
+     palette=col_groupes,
+     cex=0.7)
+
+plot(res.CA.groups,
+     choix="CA", 
+     axes=c(5,6),
+     title="Classes représentées sur le plan 5:6",
+     habillage=107, 
+     selectCol="contrib 20",
+     invisible=c("col","quali.sup"),
+     col.col=col_departements,
+     palette=col_groupes,
+     cex=0.7)
+
+
+par(mfrow=c(1,1))
+```
+
+Le plan 1:2 est le meilleur pour **visualiser simultanément et de façon dissociée** les 5 groupes de candidats.
+
+\newpage
+
+# Caractérisation des groupes
+
+Les groupes constitués par la CAH sont donc
+
+- **Groupe 1** : **Abstentions** - **Nuls**
+
+- **Groupe 2** : **Blancs** - **MELENCHON** - **ASSELINEAU** - **POUTOU** - **ARTHAUD** - **CHEMINADE**
+
+- **Groupe 3** : **LE PEN** - **DUPONT-AIGNAN**
+
+- **Groupe 4** : **FILLON** - **MACRON** - **HAMON**
+
+- **Groupe 5** : **LASSALLE**
+
+
+On cherche maintenant à **comprendre ce qui rapproche les candidats d'un même groupe**.
+Autrement dit, on cherche les départements qui votent plus ou moins que la moyenne pour les candidats du groupe.
+
+Pour ce faire, on propose de **caractériser les groupes de candidats** en étudiant les **liens entre les variables quantitatives Départements et une nouvelle variable qualitative Groupe**.
+
+Pour l'exercice, le tableau de jeu de données a été transposé :
+
+- en ligne, on retrouve les 14 candidats
+
+- en colonne, on retrouve les 106 départements
+
+- une nouvelle colonne **Groupe** est ajoutée en parallèle des départements ; elle associe un candidat à sa **modalité Groupe** (1, 2, 3, 4, 5)
+
+Par symétrie des variables Candidats et Départements dans le tableau, la transposition ne modifie pas les résultats de l'AFC incluant la variable qualitative supplémentaire Groupe (*quali.sup=107*).
+Seules les projections sur les plans peuvent présenter des symétries par rapport aux axes d'étude.
+
+Dans les chapitres suivants, après avoir identifié les plans les plus pertinents pour visualiser les groupes, 
+
+- on étudiera la **caractérisation de chaque groupe** par les départements.
+
+- on visualisera les résultats sur un **plan de l'AFC** puis sur une **projection géographique**.
+
+
+## Dimensions pertinentes
+
+L'AFC intégrant les groupes en variable qualitative supplémentaire nous indique les axes sur lesquels ils sont les mieux représentés (on s'intéresse aux valeurs $cos^2$ > 0.25) à savoir :
+
+\scriptsize
+
+```{r, echo=FALSE}
+seuil = 0.25
+for(g in rownames(res.CA.groups$quali.sup$cos2)) {
+  
+  print(g)
+  groupe.cos2 <- tri_groupe_cos2(res.CA.groups, g)
+  print(groupe.cos2[groupe.cos2 > seuil])
+}
+
+```
+\normalsize
+
+Ainsi :
+
+- Le **plan 1:2** donnera une bonne visibilité des **groupes 1, 3 et 4**
+
+- Le **plan 3:4** donnera une bonne visibilité des **groupes 2 et 5**
+
+
+## Départements caractérisant le mieux les groupes de candidats
+
+### Notion de caractérisation
+
+La **caractérisation** consiste à mesurer l'**intensité de la liaison** des **variables quantitatives Départements** (en colonne pour l'occasion) et la **variable qualitative Groupe** dont les modalités sont associées aux candidats (en ligne pour l'occasion).
+
+On utilisera une fonction **catdes** donnant, **groupe par groupe** :
+
+- les départements ayant un lien significatif avec le groupe
+
+- pour les départements significatifs, 
+
+  - la moyenne et l'écart-type des effectifs du département pour les candidats du groupe (attributs *Mean in category* et *sd in category*)
+  
+  - la moyenne et l'écart-type des effectifs du département, indépendamment du groupe (attribut *Overall Means* et *Overall sd*)
+  
+  - la valeur **v.test**, une valeur de test telle que
+  
+  $$v.test = \frac{\bar{x_j}-{\bar{x}}}{\sqrt{\frac{s^2}{I_j}(\frac{I-I_j}{I-1})}}$$
+    où 
+    
+    - **$\bar{x_j}$** est la moyenne des votants du département pour les candidats du groupe j
+  
+    - **$\bar{x}$** est la moyenne des votants du département, indépendamment du groupe de candidats
+    
+    - le dénominateur est une version corrigée de l'écart-type des effectifs du département prenant en compte **$I_j$**, le nombre de candidats du groupe j, et **I**, le nombre total de candidats
+  
+  - enfin, la **probabilité critique** (p-valeur) correspondante selon un loi normale
+  
+  
+Quelques précisions quant à la valeur **v.test** et la **p-valeur** :
+
+- Si **v.test est positif**, le département caractérise positivement le groupe i.e. **le département vote plutôt plus pour les candidats du groupe**
+    
+- Si **v.test est négatif**, le département caractérise négativement le groupe i.e. **le département vote plutôt moins pour les candidats du groupe**
+
+- Dans l'hypothèse où le département ne caractérise par le groupe de candidats, alors v.test suit une loi normale. 
+
+  Ainsi si **v.test** va au-delà de la valeur critique fixée par le seuil critique (par ex. v.test < -1.96 ou v.test > 1.96 pour un seuil à 5%), 
+  on considère que v.test ne provient pas d'une loi normale et que le département caractérise le groupe de candidats considéré.
+
+- Par défaut, un **seuil de probabilité critique de 5%** permet d'identifier les départements les plus caractérisant selon leur **p-valeur**.
+
+  Néanmoins, pour ce seuil à 5%, il se peut qu'aucun département ne soit identifié comme ayant un lien avec une modalité de la variable Groupe pour le seuil en question (la liste des départements pour le groupe en question vaut alors *NULL*).
+
+  On pourra dans ce cas, augmenter le seuil pour faire apparaître les 1ers départements liés au groupe concerné.
+
+**Une première approche de la caractérisation des groupes**
+
+```{r, include=FALSE}
+source("catdes_w.R")
+```
+
+
+```{r}
+res.catdes <- catdes.w(donnees_elections_w_groups, num.var=107, proba=0.05)
+```
+
+
+\scriptsize
+
+```{r, echo=FALSE}
+options(width = 300)
+print(res.catdes)
+```
+
+\normalsize
+
+En maintenant le seuil critique à 5%, l'analyse retourne 
+
+- le fait que le groupe 1 (Abstentions / Nuls) est caractérisé significativement par les départements de la France d'Outre-Mer (résultat observé précédemment)
+
+- le fait que le groupe 4 (**FILLON**, **MACRON** et **HAMON**) est caractérisé significativement par les départements d'Île-de-France et de l'Ouest de la France (résultat observé précédemment)
+
+- le fait que les groupes 2, 3 et 5 ne sont pas fortement caractérisés (au seuil de 5%)
+
+Analysons plus finement les groupes dans les chapitres suivants :
+
+- on identifiera les départements "influents" parmi la liste exhaustive des départements et leur *v.test*
+
+- on projettera les départements en question sur un plan de l'AFC,
+
+- on projettera les valeurs *v.test* des départements sur une réprésentation géographique du territoire,
+
+- enfin, on conclura sur les affinités territoriales des groupes de candidats
+
+
+### Groupe 1 : Nuls - Abstentions
+
+**Caractérisation du groupe (seuil de significativité de 5%)**
+
+\scriptsize
+
+```{r}
+res.catdes.groupe.1 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=0.05)
+res.catdes.groupe.1$quanti$`1`
+```
+\normalsize
+
+**Projection du groupe sur le plan 1:2**
+
+```{r GROUPE 1 map CA, fig.height=4, fig.width=6, echo=FALSE, warning=FALSE}
+plot(res.CA.groups,
+     choix="CA", 
+     axes=c(1,2),
+     
+     title="Visualisation du Groupe 1 sur le Plan 1:2",
+     
+     # habillage=107, 
+     invisible=c("quali.sup"),     
+     selectRow = c("Nuls", "Abstentions", "groupe.1"),
+     selectCol="cos2 40",
+     col.col=col_departements,
+     col.row=col_groupes[1],
+#     col.col=col_departements,
+     col.quali.sup=col_groupes[1],
+     palette=col_groupes,
+     unselect=const_unselect,
+     cex=0.7)
+
+```
+
+
+**Projection géographique des *v.test* (métropole + Corse)**
+
+\scriptsize
+
+```{r, include=FALSE}
+
+# collecte des v.tests pour tous les départements
+res.catdes.groupe.1 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=1)
+
+# collecte du vecteur
+groupe.1.caract <- res.catdes.groupe.1$quanti[[1]][,"v.test"]
+```
+
+\normalsize
+
+```{r, echo=FALSE}
+plot_map_candidat(map=NULL, candidat_data = groupe.1.caract, title="Caractérisation du Groupe 1 (v.test)", palette=palette_green)
+```
+
+**Analyse**
+
+
+Les valeurs v.tests sont toutes positives (cf. l'échelle de la projection géographique) :
+
+- Globalement, tous les départements ont une tendance à l'abstention ou au vote nul plus forte que la moyenne par modalité.
+
+- Les départements "plus foncés" sont ceux qui présentent la tendance la plus forte à l'abstention et au vote nul
+
+Ainsi, on note les particularités géographiques suivantes :
+
+- La **France d'Outre-Mer** (non représentée) et la **Corse** sont les territoires à la **tendance aux votes Nuls et abstentions la plus forte**
+
+- La tendance à l'abstention et au vote nul est homogènement répartie sur le reste du territoire.
+
+
+### Groupe 2 : Blancs - ARTHAUD - POUTOU - CHEMINADE
+
+**Caractérisation du groupe (seuil de significativité de 8%)**
+
+\scriptsize
+
+```{r, echo=FALSE}
+options(width = 300) # affichage des lignes 
+res.catdes.groupe.2 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=0.08)
+res.catdes.groupe.2$quanti$`2`
+```
+
+\normalsize
+
+**Projection du groupe sur le plan 3:4**
+
+```{r GROUPE 2 map CA, fig.height=6, fig.width=8, warning=FALSE, echo=FALSE}
+plot(res.CA.groups,
+     choix="CA", 
+     axes=c(3,4),
+
+          
+     title="Visualisation du Groupe 2 sur le Plan 3:4",
+     
+     # habillage=107, 
+     invisible=c("quali.sup"),
+     selectRow = c("Blancs", "MELENCHON", "ASSELINEAU", "ARTHAUD", "POUTOU", "CHEMINADE"),
+     selectCol="cos2 50",
+     col.col=col_departements,
+     col.row=col_groupes[2],
+     
+     xlim=c(-0.2, 0.2),
+     ylim=c(-0.1, 0.1),
+     
+     col.quali.sup=col_groupes[2],
+     palette=col_groupes,
+     unselect=const_unselect,
+     max.overlaps=20,
+     cex=0.7)
+
+```
+
+
+**Projection géographique des *v.test* (métropole + Corse)**
+
+\scriptsize
+
+```{r, echo=FALSE}
+# collecte des v.tests pour tous les départements
+res.catdes.groupe.2 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=1)
+
+# collecte du vecteur
+groupe.2.caract <- res.catdes.groupe.2$quanti[[2]][,"v.test"]
+```
+
+\normalsize
+
+```{r, warning=FALSE, echo=FALSE}
+plot_map_candidat(map=NULL, candidat_data = groupe.2.caract, title="Caractérisation du Groupe 2 (v.test)", palette=palette_green)
+```
+
+**Analyse**
+
+Les valeurs v.tests sont toutes négatives (cf. l'échelle de la projection géographique) :
+
+- Globalement, tous les départements ont une tendance à voter pour le groupe 2 plus faible que la moyenne par candidat.
+
+- Les départements "plus clairs" sont ceux qui présentent la tendance la plus faible à voter pour le groupe 2.
+
+- Les départements "plus foncés" sont ceux qui présentent un vote pour le groupe 2 proche de la valeur moyenne des votes par candidat (v.test=0).
+
+Ainsi, on note les particularités géographiques suivantes :
+
+- La tendance à voter pour le groupe 2 est homogènement mesurée sur l'ensemble du territoire.
+
+- Seules la **Seine-Saint-Denis** et l'**Ariège** présentent un vote au groupe 2 proche de la moyenne.
+
+
+
+### Groupe 3 : LE PEN - DUPONT-AIGNAN
+
+**Caractérisation du groupe (seuil de significativité de 20%)**
+
+\scriptsize
+
+```{r, echo=FALSE}
+res.catdes.groupe.3 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=0.20)
+res.catdes.groupe.3$quanti$`3`
+```
+
+\normalsize
+
+**Projection du groupe sur le plan 1:2**
+
+```{r GROUPE 3 map CA, fig.height=6, fig.width=8, warning=FALSE, echo=FALSE}
+plot(res.CA.groups,
+     choix="CA", 
+     axes=c(1,2),
+     
+     title="Visualisation du Groupe 3 sur le Plan 1:2",
+
+     selectRow = c("LE PEN", "DUPONT-AIGNAN"),
+     selectCol="cos2 50",
+     col.col=col_departements,
+     col.row=col_groupes[3],
+     
+     xlim=c(-0.2, 0.2),
+     ylim=c(0, 0.4),
+     
+     invisible=c("quali.sup"),
+     col.quali.sup=col_groupes[3],
+     palette=col_groupes,
+     unselect=const_unselect,
+     max.overlaps=20,
+     cex=0.7)
+
+```
+
+**Projection géographique des *v.test* (métropole + Corse)**
+
+```{r, echo=FALSE}
+# collecte des v.tests pour tous les départements
+res.catdes.groupe.3 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=1)
+
+# collecte du vecteur
+groupe.3.caract <- res.catdes.groupe.3$quanti[[3]][,"v.test"]
+```
+
+
+```{r, echo=FALSE}
+plot_map_candidat(map=NULL, candidat_data = groupe.3.caract, title="Caractérisation du Groupe 3 (v.test)", palette=palette_green)
+```
+**Analyse**
+
+- Les départements "plus foncés" sont ceux qui ont tendance à voter davantage pour les candidats du groupe 3 (v.test>0).
+
+- Les départements "plus clairs" sont ceux qui ont tendance à voter moins pour les candidats du groupe 3 (v.test<0).
+
+Ainsi, on note que le groupe 3 oppose la France en 2 zones Est / Ouest :
+
+- Les départements de l'Est, du Nord et du Sud-Est de la France ont tendance à plus voter pour le groupe 3.
+
+- Les départements de l'Ouest et du Sud-Ouest de la France ont tendance à moins voter pour le groupe 3.
+
+
+### Groupe 4 : MACRON - FILLON - HAMON
+
+**Caractérisation du groupe (seuil de significativité de 5%)**
+
+\scriptsize
+
+```{r, echo=FALSE}
+res.catdes.groupe.4 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=0.05)
+res.catdes.groupe.4$quanti$`4`
+```
+
+\normalsize
+
+**Projection du groupe sur le plan 1:2**
+
+```{r GROUPE 4 map CA, fig.height=6, fig.width=8, warning=FALSE, echo=FALSE}
+
+plot(res.CA.groups,
+     choix="CA", 
+     axes=c(1,2),
+
+     title="Visualisation du Groupe 4 sur le Plan 1:2",
+     
+     selectRow = c("MACRON", "FILLON", "HAMON"),
+#     selectCol="cos2 80",
+     col.col=col_departements,
+     col.row=col_groupes[4],
+
+     xlim=c(-0.3, 0),
+     ylim=c(-0.2, 0),
+     
+     invisible=c("quali.sup"),
+     col.quali.sup=col_groupes[4],
+     palette=col_groupes,
+     unselect=const_unselect,
+     max.overlaps=20,
+     cex=0.7)
+
+```
+
+**Projection géographique des *v.test* (métropole + Corse)**
+
+```{r, echo=FALSE}
+# collecte des v.tests pour tous les départements
+res.catdes.groupe.4 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=1)
+
+# collecte du vecteur
+groupe.4.caract <- res.catdes.groupe.3$quanti[[4]][,"v.test"]
+```
+
+
+```{r, echo=FALSE}
+plot_map_candidat(map=NULL, candidat_data = groupe.4.caract, title="Caractérisation du Groupe 4 (v.test)", palette=palette_green)
+```
+
+**Analyse**
+
+- Les départements "plus foncés" sont ceux qui ont tendance à voter davantage pour les candidats du groupe 4 (v.test>0).
+
+- Les départements "plus clairs" sont ceux qui ont tendance à voter moins pour les candidats du groupe 4 (v.test<0).
+
+Ainsi, le groupe 4 vient en opposition au groupe 3 en coupant lui aussi la France en 2 zones Est / Ouest :
+
+- Les départements de l'Est, du Nord et du Sud-Est de la France ont tendance à moins voter pour le groupe 4.
+
+- Les départements de l'Ouest, du Sud-Ouest et d'île-de-France ont tendance à plus voter pour le groupe 4.
+
+
+
+### Groupe 5 : LASSALLE
+
+**Caractérisation du groupe (seuil de significativité de 40%)**
+
+\scriptsize
+
+```{r, echo=FALSE}
+res.catdes.groupe.5 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=0.4)
+res.catdes.groupe.5$quanti$`5`
+```
+
+\normalsize
+
+**Projection du groupe sur le plan 3:4**
+
+```{r GROUPE 5 map CA, fig.height=6, fig.width=8, warning=FALSE, echo=FALSE}
+
+plot(res.CA.groups,
+     choix="CA", 
+     axes=c(3,4),
+
+     title="Visualisation du Groupe 5 sur le Plan 3:4",
+
+     selectRow = c("LASSALLE"),
+     selectCol="cos2 40",
+     col.col=col_departements,
+     col.row=col_groupes[5],
+
+     xlim=c(0, 0.6),
+     ylim=c(0, 0.75),
+     
+     invisible=c("quali.sup"),
+     col.quali.sup=col_groupes[5],
+     palette=col_groupes,
+     unselect=const_unselect,
+     max.overlaps=20,
+     cex=0.7)
+
+```
+
+**Projection géographique des *v.test* (métropole + Corse)**
+
+```{r, echo=FALSE}
+# collecte des v.tests pour tous les départements
+res.catdes.groupe.5 <- catdes.w(donnees_elections_w_groups, num.var=107, proba=1)
+
+# collecte du vecteur
+groupe.5.caract <- res.catdes.groupe.3$quanti[[5]][,"v.test"]
+```
+
+
+```{r, echo=FALSE}
+plot_map_candidat(map=NULL, candidat_data = groupe.5.caract, title="Caractérisation du Groupe 5 (v.test)", palette=palette_green)
+```
+
+**Analyse**
+
+- Les départements "plus foncés" sont ceux qui présentent un vote pour le candidat LASSALLE proche de la valeur moyenne des votes par candidat (v.test=0).
+
+- Les départements "plus clairs" sont ceux qui ont tendance à voter moins pour le candidat LASSALLE (v.test<0).
+
+Ainsi on note les particularités géographiques suivantes 
+
+- on vote globalement peu pour le candidat LASSALLE sur le territoire
+
+- Les départements du Sud-Ouest et la Corse ont tendance à plus voter pour le candidat LASSALLE.
+
+\newpage
+
+# Conclusion
+
+Dans cette étude, nous nous sommes intéressés à l'**ancrage territorial des candidats**.
+
+Ainsi, nous avons procédé
+
+- à une **analyse factorielle des correspondances (AFC) entre les modalités des variables Candidats et Départements** pour permettre une représentation des modalités dans un même espace géométrique,
+
+- à une **classification des scores colonnes de l'AFC** pour identifier la proximité des candidats entre eux et en déduire des groupes cohérents,
+
+- à une **caractérisation des groupes de candidats** pour identifier les départements les plus influents sur le groupe.
+
+
+La classification sur les résultats de l'AFC a permis de faire ressortir **5 groupes**:
+
+- **Groupe 1** : **Abstentions** - **Nuls**
+
+- **Groupe 2** : **Blancs** - **MELENCHON** - **ASSELINEAU** - **POUTOU** - **ARTHAUD** - **CHEMINADE**
+
+- **Groupe 3** : **LE PEN** - **DUPONT-AIGNAN**
+
+- **Groupe 4** : **FILLON** - **MACRON** - **HAMON**
+
+- **Groupe 5** : **LASSALLE**
+
+La caractérisation des groupes a permis de conclure des tendances sur l'**ancrage territorial des candidats**. 
+
+On comptera parmi les plus notables
+
+- La Corse et la France d'Outre-Mer ont une forte tendance à l'abstention et au vote nul.
+
+- La France métropolitaine oppose 2 zones Est-Ouest
+
+  - une zone Est votant davantage pour les candidats **LE PEN** et **DUPONT-AIGNAN**
+  
+  - une zone Ouest votant davantage pour les candidats **FILLON**, **HAMON**, **MACRON**
+  
+- des candidats du groupe 2 sans ancrage territorial particulier
+
+- un candidat **LASSALLE** atypique polarisant ses voix dans les **départements corses et du Sud-Ouest**
+
+\newpage
+
+# Références
+
+Site Web de la librairie R FactoMineR : 
+
+http://factominer.free.fr/ 
+
+Caractérisation de variables quantitative sur Chaîne Youtube de François Husson : 
+
+https://www.youtube.com/watch?v=JAsvTf-8cXo&t=310s
+
+Code de la fonction catdes adapté (catdes.w) : 
+
+https://superstatisticienne.fr/typologie-avec-r/
+
+Représentation géographique (raster / geodata / colorspace) : 
+
+https://www.neonscience.org/resources/learning-hub/tutorials/raster-data-r
+
+https://pmbo.pagesperso-orange.fr/STID/Outils_pilotage_2/TD1_cartographie.html
+
+http://colorspace.r-forge.r-project.org/articles/colorspace.html
+
+
